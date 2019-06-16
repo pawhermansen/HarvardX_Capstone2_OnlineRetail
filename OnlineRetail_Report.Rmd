@@ -1,0 +1,1006 @@
+---
+title:    | 
+    | Capstone Project 2: *Online Retail*
+    | Data Science Professional Certificate/HarvardX
+author: "Paw Hermansen"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r code include, include=FALSE}
+if(!require(tidyverse)) install.packages("tidyverse", dependencies = TRUE, repos = "http://cran.us.r-project.org")
+if(!require(openxlsx)) install.packages("openxlsx", dependencies = TRUE, repos = "http://cran.us.r-project.org")
+if(!require(caret)) install.packages("caret", dependencies = TRUE, repos = "http://cran.us.r-project.org")
+if(!require(scatterplot3d)) install.packages("scatterplot3d", dependencies = TRUE, repos = "http://cran.us.r-project.org")
+if(!require(lubridate)) install.packages("lubridate", dependencies = TRUE, repos = "http://cran.us.r-project.org")
+library(tidyverse)
+library(openxlsx)
+library(caret)
+library(scatterplot3d)
+library(lubridate)
+```
+
+
+```{r, echo=FALSE}
+onlineRetail <- read.xlsx(xlsxFile = 'data/Online Retail.xlsx', colNames=TRUE, rowNames=FALSE)
+onlineRetail_cleaned <- read.csv(file = 'data/onlineRetail_cleaned.csv', stringsAsFactors = FALSE)
+customerRFM <- read.csv(file = 'data/customer_rfm.csv', stringsAsFactors = TRUE)
+```
+
+
+
+# Executive Summary
+## The Data
+I examine online retail sales data found in the `Online Retail` dataset that contains all transactions for about a year around 2011 for a UK based online retail. The products are unique gift items and many of the customers are wholesalers.
+
+The dataset contains `r {n_distinct(onlineRetail$InvoiceNo)}` invoices for `r {n_distinct(onlineRetail$CustomerID)}` customers. It needed only little cleaning - I deleted invoices with no customer, I removed a few invoice rows with non-product items like handling and postage, and I removed two cancelled orders with exceptionally large quantities.
+
+After cleaning, the dataset contains `r {n_distinct(onlineRetail_cleaned$InvoiceNo)}` invoices for `r {n_distinct(onlineRetail_cleaned$CustomerID)}` customers.
+
+## The Goals
+### Part 1: Customer Segmentation (Clustering)
+RFM, **R**ecency, **F**requency, and **M**onetary Value, is an often used way to measure the value of a customer. I introduce a new Customer Segmentation based on the RFM data computed by the Kmeans clustering algorithm and compare it to a traditional fixed Customer Segmentation defined by PUTLER also based on RFM.
+
+### Part 2: Predicting Customer Segment for new Customers (Classification)
+I examine if it is possible to predict which Customer Segment a new user will end up in at the last date of the dataset based on the size of the customers first invoice in the dataset and the customers demographics, i.e. the customers country.
+
+I classify to both of the two kinds of customer segment sets computed in the first part, and I use and compare the K-nearest neighbor (knn) algorithm, the Random Forest algorithm, and an approach  with random segment selection. I chose the knn and Random Forest algorithms because they are base on very different principles.
+
+## The Results
+### The Result Part 1: Customer Segmentation
+
+Each dot in the following two plots is a customer. The position represents the R, F, and M values and the colors represent the customer segment in each of the two systems:
+
+```{r, echo=FALSE}
+colorpalette <- c("#023eff", "#ff7c00", "#1ac938", "#e8000b", "#9f4800", "#f14cc1", "#8b2be2", "#a3a3a3", "#ffc400", "#00d7ff")
+customerRFM$kmeansSegment <- as.factor(customerRFM$kmeansSegment)
+par(mfrow=c(1,2))
+plotPutler3d <- scatterplot3d(customerRFM$Recency, customerRFM$Frequency, customerRFM$Monetary,
+                        xlab = "Recency", ylab = "Frequency", zlab = "Monetary",
+                        main="Putler Customer Segments", color = colorpalette[customerRFM$putlerSegment], pch = 20)
+plotKmeans3d <- scatterplot3d(customerRFM$Recency, customerRFM$Frequency, customerRFM$Monetary,
+                        xlab = "Recency", ylab = "Frequency", zlab = "Monetary",
+                        main="K-means Customer Segments", color = colorpalette[customerRFM$kmeansSegment], pch = 20)
+legend(plotKmeans3d$xyz.convert(2.9, 10, 40), legend = levels(customerRFM$kmeansSegment), col = colorpalette, pch = 16)
+```
+
+The Putler segmentation has eleven segments and is shown for comparison in the left plot. The new Customer Segmentation computed by Kmeans clustering has seven segments and is shown in the right plot. The percentages of customers in each segment and the names I gave the segments are:
+
+```{r, echo=FALSE}
+formatSegPct <- function(n) {
+  sprintf("%5.1f%%", 100 * nrow(filter(customerRFM, kmeansSegment == n)) / nrow(customerRFM))
+}
+```
+
+|    | Name                 |  Cust. pct            | Desciption                                                              |
+|---:|:---------------------|----------------------:|:------------------------------------------------------------------------|
+|  1 | Small and Occasional | `r {formatSegPct(1)}` | Recently active but spends low and not very often                       |
+|  2 | New                  | `r {formatSegPct(2)}` | Fairly recently active but spended low and have not been active earlier |
+|  3 | Good Average         | `r {formatSegPct(3)}` | Active and buys from seldom to often and spends from low to average     |
+|  4 | Big Spenders         | `r {formatSegPct(4)}` | Spend most money of all and they recently did it again                  |
+|  5 | Inactive             | `r {formatSegPct(5)}` | Not active for a long time and spended low                              |
+|  6 | Fading Away          | `r {formatSegPct(6)}` | Not active for some time and spended low                                |
+|  7 | Good and Loyal       | `r {formatSegPct(7)}` | Spend average or more money and buy very often                          |
+
+
+### The Result Part 2: Predicting Customer Segment
+
+The accuracy of predicting the customer segment from the customers first invoice is:
+
+```{r, echo=FALSE}
+predictionResults <- read.csv('data/prediction_results.csv', stringsAsFactors = FALSE)
+```
+
+| Method             | Putler Segments Accuracy       | Kmeans Segments Accurary       |
+|:-------------------|-------------------------------:|-------------------------------:|
+| `r {predictionResults[1,1]}` | `r {predictionResults[1,2]}` | `r {predictionResults[1,3]}` |
+| `r {predictionResults[2,1]}` | `r {predictionResults[2,2]}` | `r {predictionResults[2,3]}` |
+| `r {predictionResults[3,1]}` | `r {predictionResults[3,2]}` | `r {predictionResults[3,3]}` |
+
+
+## Conclusion
+
+### Customer Segmentation
+
+My Machine Learning generated customer segments ends up with seven customer segments compared to eleven for the PUTLER approach. Other traditional RFM approaches, however, splits the the customers into between about five and twenty segments, and so the my Machine Learning generated customer segments are within what can be considered normal. The analysis, though, shows that the two sets of customer segments splits the customers in very different ways, and the segments of the two approaches do not look like each other. It is impossible to say which set of the segment sets that are best because it depends on the intended use.
+
+Further work could be done to make an analysis of the development over time of customers. To find dynamic trends or customer lifecycles would however require a dataset that covers a longer period of at least several years for a business like the one, I analysed in this report.
+
+### Predicting Customer Segment
+
+The K-nearest neigbor algorithm predicted the future customer segment worse than randomly for the new Kmeans segments! The Random Forest algorithm predicted the future customer segment of both customer segment sets a little bit better than random and also better the K-nearest neighbor algorithm. The accuracy is still low for both segment sets, though. Predicting using Random Forest might be a beginning of helping the business to a finer segmentation of new customers.
+
+It is clearly easier to predict the Kmeans segments - this is quite naturally because of the fewer segments and the very high number of customers in a single segment.
+
+In this report I did not use the information of the content of the first order and it would be interesting to investigate if using this data could help increase the accuracy of the predicting. Also the Random Forest analyses had a problem finding the best value of `mtry` and this should be fixed.
+
+
+# The Data and the Goal
+
+I have chosen to examine online retail sales data found in the `Online Retail` dataset from https://archive.ics.uci.edu/ml/datasets/Online+Retail. The documentation describes the dataset as:
+
+> This is a transnational data set which contains all the transactions occurring between
+> 01/12/2010 and 09/12/2011 for a UK-based and registered non-store online retail. The company
+> mainly sells unique all-occasion gifts. Many customers of the company are wholesalers.
+
+In the first part of this report I compare a traditional RFM Customer Segmentation of this data to a new Customer Segmentation of this data computed by the Kmeans clustering algorithm.
+
+In the second part of this report I examine if it is possible to predict which Customer Segment a new user will end up in after a year, i.e classification of new customers. I classify to both of the two kinds of customer segment sets computed in the first part, and I use and compare the K-nearest neighbor (knn) algorithm and the Random Forest algorithm for the classifications. I chose knn and Random Forest because they work on different principles.
+
+
+# Data Exploration and Cleaning
+
+## Basic Information
+
+The original data `Online Retail.xlsx` looks like:
+
+```{r, echo=FALSE}
+onlineRetail$InvoiceDate <- convertToDateTime(onlineRetail$InvoiceDate)
+attr(onlineRetail$InvoiceDate, "tzone") <- "Europe/London"
+
+glimpse(onlineRetail)
+```
+
+Each of the `r {nrow(onlineRetail)}` rows is one line of an invoice. Rows with the same `InvoiceNo` make up an invoice for a customer.
+
+The documentation of the dataset describes the fields:
+
+* `InvoiceNo`: Invoice number. Nominal, a 6-digit integral number uniquely assigned to each transaction. If this code starts with letter 'c', it indicates a cancellation. 
+* `StockCode`: Product (item) code. Nominal, a 5-digit integral number uniquely assigned to each distinct product. 
+* `Description`: Product (item) name. Nominal. 
+* `Quantity`: The quantities of each product (item) per transaction. Numeric.	
+* `InvoiceDate`: Invice Date and time. Numeric, the day and time when each transaction was generated. 
+* `UnitPrice`: Unit price. Numeric, Product price per unit in sterling. 
+* `CustomerID`: Customer number. Nominal, a 5-digit integral number uniquely assigned to each customer. 
+* `Country`: Country name. Nominal, the name of the country where each customer resides.
+
+The data contains `r {n_distinct(onlineRetail$InvoiceNo)}` different invoices and `r {n_distinct(onlineRetail$CustomerID)}` different customers. The temporal extension of the data is from `r {min(onlineRetail$InvoiceDate)}` to `r {max(onlineRetail$InvoiceDate)}`, i.e. a couple days more than one year of data.
+
+The first few lines of the data and a summary of the data is:
+
+```{r, echo=FALSE}
+head(onlineRetail)
+summary(onlineRetail)
+```
+
+From the summary we make two suspicious observations that need to be investigated further later in this report:
+
+- The lowest quantity is negative and the highest quantity is the positive of the same number.
+- The lowest unit-price is negative and the highest unit-price is nearly UK £ 40,000.
+
+
+## Explore and Clean the Data
+
+### Missing data
+
+The number of missing data in each field is:
+
+
+```{r, echo=FALSE}
+cat('Rows with missing InvoiceNo =', sum(is.na(onlineRetail$InvoiceNo)), "\n")
+cat('Rows with missing StockCode =', sum(is.na(onlineRetail$StockCode)), "\n")
+cat('Rows with missing Description =', sum(is.na(onlineRetail$Description)), "\n")
+cat('Rows with missing Quantity =', sum(is.na(onlineRetail$Quantity)), "\n")
+cat('Rows with missing InvoiceDate =', sum(is.na(onlineRetail$InvoiceDate)), "\n")
+cat('Rows with missing UnitPrice =', sum(is.na(onlineRetail$UnitPrice)), "\n")
+cat('Rows with missing CustomerID =', sum(is.na(onlineRetail$CustomerID)), "\n")
+cat('Rows with missing Country =', sum(is.na(onlineRetail$Country)), "\n")
+```
+
+I want to analyse the customers and I cannot use invoice rows with no customers. But before I remove the rows with no `CustomerID` I check if all invoices have exactly one customer. The following prints the number of invoices that have rows with different custumerID's or have a mix of NA's and different customerID's:
+
+```{r}
+onlineRetail %>%
+    group_by(InvoiceNo) %>%
+    summarize(numberOfCustomerIDs = length(unique(CustomerID))) %>%
+    filter(numberOfCustomerIDs != 1) %>%
+    nrow()
+```
+
+This means that no invoices have rows with a mix of customers, or no customer, and I delete all rows without CustomerID:
+
+```{r}
+onlineRetail = onlineRetail[!is.na(onlineRetail$CustomerID), ]
+nrow(onlineRetail)
+```
+
+And now all the empty descriptions are gone too:
+
+```{r, echo=FALSE}
+cat("Description rows with missing data =", sum(is.na(onlineRetail$Description)), "\n")
+```
+
+### InvoiceNo
+
+The data contains `r {n_distinct(onlineRetail$InvoiceNo)}` different invoice numbers, and all invoice numbers have the right format of 6 digits with or without a 'C' prefixed, as the resulting 0 in the following code shows. Nothing needs to be cleaned here:
+
+```{r}
+nrow(onlineRetail[!grepl("^C\\d{6}$", onlineRetail$InvoiceNo) & !grepl("^\\d{6}$", onlineRetail$InvoiceNo), ])
+```
+
+### StockCode
+
+The data contains `r {n_distinct(onlineRetail$StockCode)}` different stock codes. The documentation says that `StockCode` consist of 5 digits. I try to print up to ten rows where `StockCode` does not consist of exactly 5 digits:
+```{r}
+head(onlineRetail[!grepl("^\\d{5}$", onlineRetail$StockCode), ], 10)
+```
+
+So it is seen that not all `StockCode` follow the documentation. Analysing a little deeper we see that no `StockCode` contains a lowercase letter:
+
+```{r}
+nrow(onlineRetail[onlineRetail$StockCode != toupper(onlineRetail$StockCode), ])
+```
+
+
+We see, though, that the `StockCode` has a much broader format than told in the documentation. One other format is to append one or two letters to the StockCode which occurs in 33889 rows. Apparently this is often used to indicate the product color as in this example:
+
+```{r}
+nrow(onlineRetail[grepl("^\\d{5}[A-Z]{1,2}$", onlineRetail$StockCode), ])
+```
+
+All these products seem to be genuine and valid products and I leave them in the data.
+
+Product codes that differ from five digits with possible one or two letters appended, looks like:
+```{r}
+head(onlineRetail[!grepl("^\\d{5}[A-Z]{0,2}$", onlineRetail$StockCode), ], 10)
+```
+
+When collected to a full list of all the different ones we see that they all are about non product items as handling and postage:
+```{r}
+onlineRetail[!grepl("^\\d{5}[A-Z]{0,2}$", onlineRetail$StockCode), ] %>%
+    group_by(StockCode) %>%
+    count(Description) %>%
+    top_n(1, wt=n) %>%
+    ungroup() %>%
+    select(-n)
+```
+
+I remove them from the data because they only are non product items. It will probably not matter much because there only are
+`r {nrow(onlineRetail[!grepl("^\\d{5}[A-Z]{0,2}$", onlineRetail$StockCode), ])}` invoice rows with one of these product codes:
+
+```{r}
+onlineRetail = onlineRetail[grepl("^\\d{5}[A-Z]{0,2}$", onlineRetail$StockCode),, ]
+nrow(onlineRetail)
+```
+
+
+### Cancelled Invoices
+
+Invoices with `InvoiceNo` starting with a 'c' is a cancellation invoice that cancels one or more rows in other invoices. For example:
+```{r}
+head(onlineRetail[startsWith(tolower(onlineRetail$InvoiceNo), "c"), ], 10)
+```
+
+In these examples all the quantities are negative, and it can be shown that negative quantities correspond to exactly the cancellation invoices because there are no rows with a cancellation invoice with a positive quantity and no rows with a non-cancellation invoice with a negative quantity:
+```{r}
+nrow(onlineRetail[startsWith(tolower(onlineRetail$InvoiceNo), "c") ^ onlineRetail$Quantity < 0, ])
+```
+
+
+The cancelled rows do not show which other invoice row they cancel. In some cases a probable original invoice row can be found manually, like the suspicious observation about the minimum and maximum quantity made earlier:
+
+```{r}
+onlineRetail[abs(onlineRetail$Quantity) >= 40000, ]
+```
+
+In other cases the cancelled original invoice row cannot be found. For example listing all the `onlineRetail` rows for customer 17548 show three invoices where one of them, C536391, is a cancellation but there is no rows showing that the customer ever ordered these items - perhaps because the original order was made before the first date of this data: 
+```{r}
+onlineRetail[onlineRetail$CustomerID == 17548, ]
+```
+
+I decide not to delete cancellation invoice rows in general because the influence the quantity and the amount actually spend by each customer. However, I decide to remove two exceptional orders with Quantity larger than 70000 because they exceptionally large, they were clearly mistakes that were cancelled within 15 minutes, and I do not want them to skew the data:
+
+```{r}
+onlineRetail = onlineRetail[abs(onlineRetail$Quantity) < 40000, ]
+```
+
+
+### Quantity
+
+All quantities are integer numbers as expected as shown by the following zero count:
+
+```{r}
+nrow(onlineRetail[onlineRetail$Quantity != as.integer(onlineRetail$Quantity), ])
+```
+
+and no quantity is zero:
+
+```{r}
+nrow(onlineRetail[onlineRetail$Quantity == 0, ])
+```
+
+As seen earlier the lowest quantity is negative and the highest quantity is the positive of the same number. Furthermore, the two largest quantities, 80995 and 74215, are cancelled and I decide to leave the data as is.
+
+```{r}
+onlineRetail[2500 < abs(onlineRetail$Quantity), ]
+```
+
+### InvoiceDate
+
+The following example of the lines making up a full invoice can have different timestamps. It looks like the rows have been keyed-in by hand and that it took a little while for each row:
+
+```{r}
+onlineRetail[onlineRetail$InvoiceNo == 544926, ]
+```
+
+The date, however, is constant on all of the invoices, as is seen from the following sorted list of the invoices having the most different dates, and they show that all invoices have at most 1 date:
+
+```{r}
+onlineRetail %>%
+    group_by(InvoiceNo) %>%
+    summarize(numberOfDates = length(unique(as.Date(InvoiceDate, "%Y-%m-%d")))) %>%
+    arrange(desc(numberOfDates)) %>%
+    head(5)
+```
+
+### UnitPrice
+
+No unit prices are negative but 33 are zero:
+```{r}
+onlineRetail[onlineRetail$UnitPrice <= 0, ]
+```
+
+Apparently the company gives away free stuff from time to time. If the items were actually ordered by the customer and then given free to the customer I would want them to the stay in the data to reflect the customers intention. If the items were not ordered by the customer but just given as a free promotional gift they say nothing about the customer and I would delete them from the data. The problem is that I do not know which one is true. Because there are only 33 invoice rows where the unit price is zero I decide to leave them in the data.
+
+
+### CustomerID
+
+The data contains `r {n_distinct(onlineRetail$CustomerID)}` different customer ID's. The customer ID's are all five digit integer as said in the documentation of the data and there is no need to clean-up anything here:
+
+```{r}
+nrow(onlineRetail[onlineRetail$CustomerID != as.integer(onlineRetail$CustomerID), ])
+nrow(onlineRetail[onlineRetail$CustomerID < 10000 | 99999 < onlineRetail$CustomerID, ])
+```
+
+Each invoice row has a customer and it could be that invoice rows making up a full invoice would have several different customers. This is not so, however, and it is easy to see, that all invoices have no more than one customer. The following is a sorted list of the invoices having the most different customers, and they show that all invoices have at most 1 customer:
+
+```{r}
+onlineRetail %>%
+    group_by(InvoiceNo) %>%
+    summarize(numberOfCustomers = length(unique(CustomerID))) %>%
+    arrange(desc(numberOfCustomers)) %>%
+    head(5)
+```
+
+### Country
+
+The countries include an 'Unspecified' and all seems Ok except that it also includes 'European Community' that includes several of the other countries:
+
+```{r}
+unique(onlineRetail$Country)
+```
+
+It it seen, though, that only one customer (with four invoices) has 'European Community' as country and I decide to leave it in the data:
+
+```{r}
+onlineRetail[onlineRetail$Country == 'European Community', ] %>%
+    distinct(InvoiceNo, CustomerID)
+```
+
+### The Data Types
+
+Finally, I change some of the fields from being strings or numerics to be categorial data. For example the `CustomerID` that is read as a number from the original data, but it of course make no sense to do arithmetic on customer ID's, you cannot add two customer ID's for example. And all in all I end up with the following data ready to be analysed:
+
+```{r, echo=FALSE}
+onlineRetail$InvoiceNo <- as.factor(onlineRetail$InvoiceNo)
+onlineRetail$StockCode <- as.factor(onlineRetail$StockCode)
+onlineRetail$Quantity <- as.integer(onlineRetail$Quantity)
+onlineRetail$CustomerID <- as.factor(onlineRetail$CustomerID)
+onlineRetail$Country <- as.factor(gsub(" ", "", onlineRetail$Country))
+
+glimpse(onlineRetail)
+```
+
+### Sizes after Cleaning the Data
+
+After cleaning the dataset it contains `r {n_distinct(onlineRetail$InvoiceNo)}` different invoices and `r {n_distinct(onlineRetail$CustomerID)}` different customers.
+
+# Part 1: Analysis of Customer RFM and Customer Segments
+
+## Introduction
+RFM is an often used way to measure the value of a customer. The three letters stand for **R**ecency, **F**requency, and **M**onetary Value. For the dataset `onlineRetail` I use the following:
+
+- Recency: the number of days before the last date of the period
+- Frequency: the number of different invoices and cancellations over the period
+- Monetary Value: the total amount paid over the period (does take cancellations inside the period into account)
+
+That is, I take the full year-long dataset as the period to compute for. In a real business setting you would get new data every day, and you could periodically recalculate the results I get in this report on data for the last year or two.
+
+My goal is to cluster the customers from their RFM, first using a traditional, fixed algorithm, and second using a machine learning clustering algorithm and finally compare the two customer segmentations.
+
+## Calculate RFM for each Customer
+
+I build a new dataset `CustomerRFM` that contains the RFM values for each customer from the `onlineRetail` dataset:
+
+```{r}
+RecencyDate = as.Date(max(onlineRetail$InvoiceDate))
+CustomerRFM <- onlineRetail %>%
+    group_by(CustomerID) %>%
+    summarize(Recency = as.numeric(RecencyDate - as.Date(max(InvoiceDate))),
+             Frequency = n_distinct(InvoiceNo),
+             Monetary = sum(Quantity * UnitPrice))
+head(CustomerRFM)
+summary(CustomerRFM)
+```
+
+I need to scale the values before using them. If for example the first feature in a dataset ranges from 0 to 1 and the second feature ranges from 0 to 1000, the computed Euclidean distance between two points, or rows, from the dataset will be nearly totally dominated by the second feature. To avoid this problem the features must be scaled to the same ranges before using them in a clustering algorithm.
+
+I use the following to scale the three feature R, F, and M. The method I use assumes that the values in each feature is close to be normal distributed and scale the values to have mean 0 and standard deviation 1. The values in `CustomerRFM` are not normally distributed but scaling this way is much better than not scaling:
+
+```{r}
+CustomerRFM$Recency <- scale(CustomerRFM$Recency)
+CustomerRFM$Frequency <- scale(CustomerRFM$Frequency)
+CustomerRFM$Monetary <- scale(CustomerRFM$Monetary)
+head(CustomerRFM)
+```
+
+And we end as expected up with scaled values for each feature:
+
+```{r, echo=FALSE}
+sprintf("Recency:   mean = %f, sd = %f", mean(CustomerRFM$Recency), sd(CustomerRFM$Recency))
+sprintf("Frequency: mean = %f, sd = %f", mean(CustomerRFM$Frequency), sd(CustomerRFM$Frequency))
+sprintf("Monetary:  mean = %f, sd = %f", mean(CustomerRFM$Monetary), sd(CustomerRFM$Monetary))
+```
+
+
+## Visually Illustrating the Values and Principal Component Analysis
+
+In the following plot it is seen that all three features are pairwise correlated but not in a simple, for example, linear way. Recency, though, seems to be correlated in somewhat the same way to both Frequency and Monetary which suggests that much of the variability in the data can be expressed with only two features, if we can find the suitable features.
+
+```{r}
+pairs(~Recency+Frequency+Monetary,data=CustomerRFM, 
+    main="Simple Scatterplot Matrix", pch = 20)
+```
+
+To illustrate the RFM values for the customers I first draw a three-dimensional plot where each point is a customer and each of the three coordinates is one of the three RFM features such that the points position is the RFM values of that customer.
+
+```{r}
+scatterplot3d(CustomerRFM$Recency, CustomerRFM$Frequency, CustomerRFM$Monetary,
+              pch = 20,
+              main="3D Scatterplot",
+              xlab = "Recency", ylab = "Frequency", zlab = "Monetary")
+```
+
+It is worth noting that a big part of the space is empty. For example there are no customers that buy frquently but just not recently. A possible explanation is that freqency and recency is connected in that if a customer has not bought in a while then the frequency falls.
+
+It is hard, at least for me, to see the exact three-dimensional positions of the points in this three-dimensional plot. It would be much easier to look at in a turnable, and possibly interactive, three-dimensional plot but this is not possible in the pdf format of this report.
+
+So in addition to the three dimensional plot I also illustrate the positions of the points in a two-dimensional plot where I map all the points from three dimensions into two dimensions using Principal Component Analysis (PCA). PCA computes a new three-dimensional coordinate system where each coordinate, in order, covers as much variability as possible. So dropping the least important coordinate after PCA will usually give a much better result, and never be worse, than just dropping one of the coordinates without PCA.
+
+```{r}
+CustomerRFM_PCA <- prcomp(CustomerRFM[c(2,3,4)])
+summary(CustomerRFM_PCA)
+```
+
+The three new dimensions are sorted by the amount of variability of the data in the coordinates direction (*standard deviation*). It is seen that the two first coordinates together explain close to 86% of the variance of the data, which means that using the first two coordinates will give a reasonable illustration of the customers RFM values. However, it is an approximation only and there is no need to reduce the number of features from three to two in the further calculations. So I use the PCA for illustration only.
+
+In the following plot it is easy to see, that most of the customers clusters together in one big angular formed cluster with fewer customers radiating out of the big cluster. I had hoped that a small number, five to ten, clusters formed by the positions of the points, i.e. customers, were clearly visible. This is however not the case and any customer segmentation will only be a rough and simplifying description of the much more continuously distributed customers.
+
+```{r}
+plot(CustomerRFM_PCA$x[,1], CustomerRFM_PCA$x[,2], 
+     xlab="PC1 (56%)", ylab = "PC2 (30%)",
+     main = "PC1 / PC2 - plot",
+     pch = 20, col = "black")
+```
+
+## Customer Segmentation using a Traditional Fixed Method
+
+The Internet contains many sources that explain their way to split customers into Customer Segment using their RFM values. While there seems to be many different ways to segment customers based on RFM, all I have found is based on the same principles and differ only on the details and on the definition of the final customer segments. I use the process from https://www.putler.com/rfm-analysis/ because their method is close to all other methods that I found and they describe it detailed.
+
+First a score 1 to 5 is assigned to each of R, F, and M using quintiles, i.e. it scores 5 if the value is ranked in the best 20%, it scores 4 if ranked in the best 20-40%, etc. For R lower values are best, for F and M higher values are best. I do not need to scale the original RFM values but because the rank is not changed by scaling it does not matter and I use the scaled `CustomerRFM` that I already have build.
+
+```{r}
+n = nrow(CustomerRFM)
+CustomerRFM$RecencyScore   <- as.integer(1 + 5 * (1 - rank(CustomerRFM$Recency) / n))
+CustomerRFM$FrequencyScore <- as.integer(1 + 5 * rank(CustomerRFM$Frequency) / n)
+CustomerRFM$MonetaryScore  <- as.integer(1 + 5 * rank(CustomerRFM$Monetary) / n)
+head(CustomerRFM)
+```
+
+The customer are now assigned to one of eleven customer segments dependent on their R, F, and M scores. For example customers with R, F, and M scores of 5, 5, and 5 are in the Champions customer segment - they bought recently, buy often and spend a lot. The eleven customer segments are called: "Champions", "Loyal Customers", "Potential Loyalist", "Recent Customers", "Promising", "Customers Needing Attention", "About To Sleep", "At Risk", "Can’t Lose Them", "Hibernating", "Lost".
+
+Most of the eleven customer segments combine different R, F, and M scores. The following function computes them all:
+
+```{r}
+putlerSegment <- function(row) {
+    fm <- as.integer((as.integer(row["FrequencyScore"]) + as.integer(row["MonetaryScore"])) / 2) - 1
+    idx = 1 + 5 * (as.integer(row["RecencyScore"]) - 1) + fm
+    switch(idx,
+        "Lost",
+        "Lost",
+        "AtRisk",
+        "AtRisk",
+        "CantLoseThem",
+        "Lost",
+        "Hibernating",
+        "AtRisk",
+        "AtRisk",
+        "AtRisk",
+        "AboutToSleep",
+        "AboutToSleep",
+        "NeedingAttention",
+        "LoyalCustomers",
+        "LoyalCustomers",
+        "Promising",
+        "PotentialLoyalist",
+        "PotentialLoyalist",
+        "LoyalCustomers",
+        "LoyalCustomers",
+        "RecentCustomers",
+        "PotentialLoyalist",
+        "PotentialLoyalist",
+        "LoyalCustomers",
+        "Champions")
+}
+```
+
+and after computing the Putler Customer Segments the data looks like:
+
+```{r}
+CustomerRFM$putlerSegment <- apply(CustomerRFM, 1, putlerSegment)
+head(CustomerRFM)
+```
+
+Cleaning up the sums and balances:
+
+```{r}
+CustomerRFM$RecencyScore <- NULL
+CustomerRFM$FrequencyScore <- NULL
+CustomerRFM$MonetaryScore <- NULL
+CustomerRFM$putlerSegment <- as.factor(CustomerRFM$putlerSegment)
+
+head(CustomerRFM)
+```
+
+The following two plots illustrate the customers Putler segments with each segment being a different color:
+
+```{r}
+colors <- colorpalette[CustomerRFM$putlerSegment]
+
+plot3d <- scatterplot3d(CustomerRFM$Recency, CustomerRFM$Frequency, CustomerRFM$Monetary,
+                        xlab = "Recency", ylab = "Frequency", zlab = "Monetary",
+                        main="Putler Customer Segments", color = colors, pch = 20)
+legend(plot3d$xyz.convert(2.9, 10, 40),
+       legend = levels(CustomerRFM$putlerSegment),
+       col = colorpalette, pch = 16)
+```
+
+```{r}
+colors <- colorpalette[CustomerRFM$putlerSegment]
+
+plot(CustomerRFM_PCA$x[,1], CustomerRFM_PCA$x[,2], 
+     xlab="PC1 (56%)", ylab = "PC2 (30%)",
+     main = "Putler Customer Segments (mapped to 2D)",
+     pch = 20, col = colors)
+legend("topleft", legend = levels(CustomerRFM$putlerSegment),
+       col = colorpalette, pch = 16)
+```
+
+The plots show that the Putler segments seems to differ a lot in how many customers are in each segment and especially the Champions segment seems to cover a much larger area than the other segments.
+
+The number of customers in each Putler segment is:
+
+```{r}
+CustomerRFM %>%
+    group_by(putlerSegment) %>%
+    summarize(NumberOfCustomers = n()) %>%
+    arrange(desc(NumberOfCustomers))
+```
+
+
+## Customer Segmentation using K-means Machine Learning Clustering Method
+
+Clustering is an unsupervised machine learning technique which means that no examples of a correct solution are given beforehand. Instead the goal is to find clusters in the given data using some measure of distance. Several different algorithms exist to find clusters. I choose to use the K-means algorithm with Euclidean distance because it is easy to understand and fast enough for the use here.
+
+K-means starts by selecting k cluster centers randomly or in some predefined pattern. In step 1 all the data points are assigned to its closest cluster center. In step 2 the cluster centers are moved to the mean of all the data points in the cluster. Step1 and 2 are repeated until the cluster centers have converged or a maximal  predefined number of steps have been executed. Actually there are implementations of several variations of the basic algorithm but I just use the default.
+
+First I want to find the optimal number of clusters to use. The goal is to have high similarity within each cluster and low similarity across clusters and I use the socalled elbow method where I plot the the percentage of explained variance against the number of clusters. At a certain point adding one more cluster does not increase the percentage of explained variance as much as before. This is the socalled elbow point and the number of clusters at the elbow point is optimal in this sense.
+
+```{r}
+set.seed(9)
+pExplainedVar = rep(0,20)
+df <- select(CustomerRFM, Recency, Frequency, Monetary)
+for (i in 2:20) {
+    fit = kmeans(df, centers = i, iter.max = 15, nstart = 20)
+    pExplainedVar[i] = 100 * fit$betweenss / fit$totss
+}
+
+plot(1:20, pExplainedVar, type="b", pch = 20, xlab="Number of Clusters", ylab="Percentage of Explained Variance by Clusters")
+text(1:20, pExplainedVar, labels = 1:20, cex = 0.7, pos = 3)
+```
+
+From the above plot I think that the flattening-out of the increase begins somewhere around seven or eight and I choose to continue to find seven clusters using the K-means algorithm.
+
+```{r}
+set.seed(9)
+df <- select(CustomerRFM, Recency, Frequency, Monetary)
+k_result <- kmeans(df, centers = 7, iter.max = 15, nstart = 25)
+
+k_result$centers
+```
+
+Adding the found clusters to the `CustomerRFM` and draw the same plots as for the Putler segments:
+```{r}
+CustomerRFM$kmeansSegment <- as.factor(k_result$cluster)
+head(CustomerRFM)
+```
+
+The following two plots illustrate the customers K-means segments with each segment being a different color:
+```{r}
+colors <- colorpalette[CustomerRFM$kmeansSegment]
+
+plot3d <- scatterplot3d(CustomerRFM$Recency, CustomerRFM$Frequency, CustomerRFM$Monetary,
+                        xlab = "Recency", ylab = "Frequency", zlab = "Monetary",
+                        main="K-means Customer Segments", color = colors, pch = 20)
+legend(plot3d$xyz.convert(2.9, 10, 40),
+       legend = levels(CustomerRFM$kmeansSegment),
+       col = colorpalette, pch = 20)
+```
+
+```{r}
+colors <- colorpalette[CustomerRFM$kmeansSegment]
+
+plot(CustomerRFM_PCA$x[,1], CustomerRFM_PCA$x[,2], 
+     xlab="PC1 (56%)", ylab = "PC2 (30%)",
+     main = "K-means Customer Segments (mapped to 2D)",
+     pch = 20, col = colors)
+legend("topleft", legend = levels(CustomerRFM$kmeansSegment),
+       col = colorpalette, pch = 16)
+```
+
+The plots show that the K-means segments seems like the Putler segments to differ a lot in how many customers are in each segment and in how large area they cover.
+
+The number of customers in each K-means segment is:
+
+```{r}
+CustomerRFM %>%
+    group_by(kmeansSegment) %>%
+    summarize(NumberOfCustomers = n()) %>%
+    arrange(desc(NumberOfCustomers))
+```
+
+To be useful we need a business intepretation of the seven K-means clusters. I make that by looking at three projections of the three dimesional plot of the K-means clusters by leaving out one of the coordinates.
+
+```{r}
+colors <- colorpalette[CustomerRFM$kmeansSegment]
+plot(CustomerRFM$Recency, CustomerRFM$Frequency,
+                        xlab = "Recency", ylab = "Frequency",
+                        main="K-means Customer Segments", col = colors, pch = 20)
+legend("topright", legend = levels(CustomerRFM$kmeansSegment),
+       col = colorpalette, pch = 16)
+```
+```{r}
+colors <- colorpalette[CustomerRFM$kmeansSegment]
+plot(CustomerRFM$Recency, CustomerRFM$Monetary,
+                        xlab = "Recency", ylab = "Monetary",
+                        main="K-means Customer Segments", col = colors, pch = 20)
+legend("topright", legend = levels(CustomerRFM$kmeansSegment),
+       col = colorpalette, pch = 16)
+```
+```{r}
+colors <- colorpalette[CustomerRFM$kmeansSegment]
+plot(CustomerRFM$Frequency, CustomerRFM$Monetary,
+                        xlab = "Frequency", ylab = "Monetary",
+                        main="K-means Customer Segments", col = colors, pch = 20)
+legend("topright", legend = levels(CustomerRFM$kmeansSegment),
+       col = colorpalette, pch = 16)
+```
+
+From looking at the three two-dimsional projections of the K-means clusters I suggest the following description of the K-means segments:
+
+| Number | Name                 | Desciption                                                              |
+|--------|:---------------------|:------------------------------------------------------------------------|
+| 1      | Small and Occasional | Recently active but spends low and not very often                       |
+| 2      | New                  | Fairly recently active but spended low and have not been active earlier |
+| 3      | Good Average         | Active and buys from seldom to often and spends from low to average     |
+| 4      | Big Spenders         | Spend most money of all and they recently did it again                  |
+| 5      | Inactive             | Not active for a long time and spended low                              |
+| 6      | Fading Away          | Not active for some time and spended low                                |
+| 7      | Good and Loyal       | Spend average or more money and buy very often                          |
+
+To compare with the Putler segments I computer for each K-means cluster the percentual composition of customers that are in each of the Putler clusters:
+
+```{r}
+CustomerRFM %>%
+    group_by(kmeansSegment) %>%
+    count(putlerSegment) %>%
+    mutate(percent = 100*n/sum(n))
+```
+
+It is seen from the table that especially K-means segment 7 overlap with many Putler segments, and it is seen that for example the Putler Champions segment is split into several of the K-means segments. All in all the two sets of segments parts the customers in very different ways.
+
+# Part 2: Analysis of Predicting Customer Segments from their First Order
+
+## Introduction
+
+I want to predict in which segment a new customer ends up at the end of the period of the given data. I will use all the given features of the customer available at the time of the the customers first purchase. This a classification problem and it is grouped as a supervised machine learning problem because we train a model from a training set where the correct answer is given.
+
+I train two different models for each of the K-means segment prediction and the Putler segment prediction. First I use k-nearest neighbors and then I use random forest because I want to try more than one algorithm to see how they compare. Also I compare to a simple random approach of guessing the segment randomly according to the segment sizes.
+
+For this investigation I assume that each customers first non-cancellation order is the customers first order, even though I cannot know if the customer has been a customer for years before the first date in my dataset.
+
+## The Class Imbalance Problem
+
+We saw earlier that the number of customers in the Putler segments varies from a few to about 1000, and that the numbers of customers in the Kmeans segments varies from a few to about 2500. The large difference of the class sizes, the imbalanced classes, makes it very possible that the classification algorithms optimises the accuracy at the expense of the precision, and we risk an algorithm that always predicts the most populated category.
+
+Different approaches to prevent this exists, but it is not the purpose of this report to compare different possible solution to the class imbalance problem and I just choose a method that often works and after the training of the models I check if the predictions are spread on several categories. The approach I choose is oversampling of the small categories. It is chosen in the caret train method by adding `sampling = "up"` to the trainControl.
+
+## Feature extraction
+
+First I construct a data frame that holds information about the first purchase for each customer. I ignore all the cancellations because I only want the first non-cancellation order for each customer. In the process we loose about twenty customers who only had cancellations in the dataset.
+```{r}
+firstOrder <- onlineRetail %>%
+    filter(!startsWith(tolower(as.character(InvoiceNo)), "c")) %>%
+    group_by(CustomerID, InvoiceNo) %>%
+    summarize(N = n(), TotalQuantity = sum(Quantity),
+              TimeOfDay = (60 * hour(min(InvoiceDate)) + minute(min(InvoiceDate))),
+              TotalPrice = sum(Quantity*UnitPrice), Country = first(Country),
+              InvoiceDate = min(InvoiceDate)) %>%
+    slice(which.min(InvoiceDate)) %>%
+    ungroup() %>%
+    inner_join(CustomerRFM, by = "CustomerID") %>%
+    select(-CustomerID, -Recency, -Frequency, -Monetary, -InvoiceDate, -InvoiceNo)
+
+print(nrow(firstOrder))
+head(firstOrder)
+```
+
+Because I want to use the k-nearest neighbor algorithm, see more about this in a moment, and because the k-nearest neighbor algorithm use the distance between points I need to scale the numeric data before I train the models. Also I change the `Country` feature to dummy variable, aka one hot encoding, to make it numeric:
+
+```{r}
+dummy <- dummyVars("~ Country", data = firstOrder, sep = NULL)
+firstOrderEncoded <- cbind(firstOrder, predict(dummy, newdata = firstOrder))
+
+firstOrderEncoded <- firstOrderEncoded %>%
+    select(-Country) %>%
+    mutate_if(is.numeric, function(clm) { as.vector(scale(clm)) })
+
+glimpse(firstOrderEncoded)
+```
+
+Using the R caret package I first split my data into test and training sets with 70% of the original data being the training set and 30% being the test set:
+```{r}
+set.seed(9)
+test_index <- createDataPartition(firstOrderEncoded$kmeansSegment, times = 1, p = 0.3, list = FALSE)
+
+test_set <- firstOrderEncoded[test_index, ]
+train_set <- firstOrderEncoded[-test_index, ]
+
+cat("Size of test_set =", nrow(test_set), "\n")
+cat("Size of train_set =", nrow(train_set), "\n")
+```
+
+## Random Guessing for Putler Segments
+
+As a baseline I use a simple predictor that for any customer always predicts randomly according to the sizes of each segment. First for the Putler segments:
+```{r}
+putlerSegments <- CustomerRFM %>%
+    group_by(putlerSegment) %>%
+    summarize(NumberOfCustomers = n())
+```
+
+and when predicting the testset we get the following accuracy:
+```{r}
+set.seed(9)
+idx <- sample(nrow(putlerSegments), size = nrow(test_set), replace=TRUE, prob = putlerSegments$NumberOfCustomers)
+test_pred <- putlerSegments[idx, ]$putlerSegment
+accuracy <- mean(test_pred == test_set$putlerSegment)
+accuracy_random_onPutler = sprintf("%.2f", accuracy)
+accuracy_random_onPutler
+```
+
+## Random Guessing for Kmeans Segments
+
+The baseline for the Kmeans segments is:
+
+```{r}
+kmeansSegments <- CustomerRFM %>%
+    group_by(kmeansSegment) %>%
+    summarize(NumberOfCustomers = n())
+```
+
+and when predicting the testset we get the following accuracy:
+```{r}
+set.seed(9)
+idx <- sample(nrow(kmeansSegments), size = nrow(test_set), replace=TRUE, prob = kmeansSegments$NumberOfCustomers)
+test_pred <- kmeansSegments[idx, ]$kmeansSegment
+accuracy <- mean(test_pred == test_set$kmeansSegment)
+accuracy_random_onKmeans = sprintf("%.2f", accuracy)
+accuracy_random_onKmeans
+```
+
+
+## Train and test K-nearest Neigbor Algorithm for Putler Segments
+
+### Training
+
+I use the caret package that takes care of cross validation and running on different values of `k`, the number of neighbors to look at, to find the best value. First I try to find the best `k` for Putler segments using 5-fold cross validation:
+
+```{r eval=FALSE}
+set.seed(9)
+trained_knn_onPutler <- train(putlerSegment ~ .,
+                              method = "knn",
+                              data = select(train_set, -kmeansSegment),
+                              trControl = trainControl(method = "cv", number = 5),
+                              tuneGrid = data.frame(k = seq(2, 150, 2)))
+```
+```{r echo=FALSE}
+trained_knn_onPutler <- readRDS("data/trained_knn_onPutler.rds")
+```
+
+```{r}
+plot(trained_knn_onPutler, pch = 20)
+```
+
+The algorithm finds the best `k = ` `r {trained_knn_onPutler$bestTune}` which I find is surprisingly low.
+
+### Results
+
+Using `k = ` `r {trained_knn_onPutler$bestTune}` I now find the accuracy when trying to predict the testset:
+
+```{r}
+test_pred <- predict(trained_knn_onPutler, newdata = test_set)
+accuracy <- mean(test_pred == test_set$putlerSegment)
+accuracy_knn_onPutler = sprintf("%.2f", accuracy)
+accuracy_knn_onPutler
+```
+
+Looking at the Confusion Matrix it is seen that the method predicts all segments and in different frequency as expected and there seems to be no problems with class imbalance:
+```{r}
+confusionMatrix(test_pred, test_set$putlerSegment)$table
+```
+
+## Train and Test K-nearest Neigbor Algorithm for Kmeans Segments
+
+### Training
+
+Again I first try to find the best `k` for Kmeans segments using 5-fold cross validation:
+
+```{r eval=FALSE}
+set.seed(9)
+trained_knn_onKmeans <- train(kmeansSegment ~ .,
+                              method = "knn",
+                              data = select(train_set, -putlerSegment),
+                              trControl = trainControl(method = "cv", number = 5),
+                              tuneGrid = data.frame(k = seq(2, 150, 2)))
+```
+```{r echo=FALSE}
+trained_knn_onKmeans <- readRDS("data/trained_knn_onKmeans.rds")
+```
+
+```{r}
+plot(trained_knn_onKmeans, pch = 20)
+```
+
+As for the Putler segments the best `k` is surprisingly low at `k = ` `r {trained_knn_onKmeans$bestTune}`.
+
+### Results
+
+Using `k = ` `r {trained_knn_onKmeans$bestTune}` I now find the accuracy when trying to predict the testset:
+
+```{r}
+test_pred <- predict(trained_knn_onKmeans, newdata = test_set)
+accuracy <- mean(test_pred == test_set$kmeansSegment)
+accuracy_knn_onKmeans = sprintf("%.2f", accuracy)
+accuracy_knn_onKmeans
+```
+
+Looking at the Confusion Matrix it is seen that the method predicts all segments and in different frequency as expected and there seems to be no problems with class imbalance:
+```{r}
+confusionMatrix(test_pred, test_set$kmeansSegment)$table
+```
+
+## Train and Test Random Forest Algorithm for Putler Segments
+
+### Training
+
+A Random Forest works by building many different Decision Trees during training. The predictions are made by majority vote by the decision trees.
+
+The Random Forest algorithm has several parameters - the one that is said to have most influence on the result is `mtry` that is the number of variables randomly sampled as candidates at each split of decision tress.
+
+Using 5-fold cross validation and the default of 500 decision trees the training is:
+
+```{r eval=FALSE}
+set.seed(9)
+trained_Forest_onPutler <- train(putlerSegment ~ .,
+                              method = "rf",
+                              data = select(train_set, -kmeansSegment),
+                              trControl = trainControl(method = "cv", number = 5),
+                              tuneGrid = data.frame(mtry = seq(1,15,1)))
+```
+```{r echo=FALSE}
+trained_Forest_onPutler <- readRDS("data/trained_Forest_onPutler.rds")
+```
+
+```{r}
+plot(trained_Forest_onPutler, pch = 20)
+```
+
+### Results
+
+The algorithm found the best `mtry = ` `r {trained_Forest_onPutler$bestTune$mtry}` but it is at the end of my search interval. From different other peoples experience I expected `mtry` to be lower than 15 but I was wrong. Because the training is very slow and because the curve seems to flatten at 15 I choose to keep `mtry = ` `r {trained_Forest_onPutler$bestTune$mtry}`. Using this value I now find the accuracy when trying to predict the testset:
+
+```{r}
+test_pred <- predict(trained_Forest_onPutler, newdata = test_set)
+accuracy <- mean(test_pred == test_set$putlerSegment)
+accuracy_Forest_onPutler = sprintf("%.2f", accuracy)
+accuracy_Forest_onPutler
+```
+
+Looking at the Confusion Matrix it is seen that the method predicts all segments and in different frequency as expected and there seems to be no problems with class imbalance:
+
+```{r}
+confusionMatrix(test_pred, test_set$putlerSegment)$table
+```
+
+
+## Train and test Random Forest Algorithm for Kmeans Segments
+
+### Training
+
+For the Kmeans segments I train:
+
+```{r eval=FALSE}
+set.seed(9)
+trained_Forest_onKmeans <- train(kmeansSegment ~ .,
+                              method = "rf",
+                              data = select(train_set, -putlerSegment),
+                              trControl = trainControl(method = "cv", number = 5),
+                              tuneGrid = data.frame(mtry = seq(1,15,1)))
+```
+```{r echo=FALSE}
+trained_Forest_onKmeans <- readRDS("data/trained_Forest_onKmeans.rds")
+```
+
+```{r}
+plot(trained_Forest_onKmeans, pch = 20)
+```
+
+### Results
+
+Again the algorithm found the best `mtry = ` `r {trained_Forest_onKmeans$bestTune$mtry}` and as before I choose to keep `mtry = ` `r {trained_Forest_onKmeans$bestTune$mtry}`. Using this value I now find the accuracy when trying to predict the testset:
+
+```{r}
+test_pred <- predict(trained_Forest_onKmeans, newdata = test_set)
+accuracy <- mean(test_pred == test_set$kmeansSegment)
+accuracy_Forest_onKmeans = sprintf("%.2f", accuracy)
+accuracy_Forest_onKmeans
+```
+
+Looking at the Confusion Matrix it is seen that the method predicts all segments and in different frequency as expected and there seems to be no problems with class imbalance:
+
+```{r}
+confusionMatrix(test_pred, test_set$kmeansSegment)$table
+```
+
+## Collected Results of Predicting
+
+| Method             | Putler Segments Accuracy       | Kmeans Segments Accurary       |
+|:-------------------|-------------------------------:|-------------------------------:|
+| Random             | `r {accuracy_random_onPutler}` | `r {accuracy_random_onKmeans}` |
+| K-nearest neighbor | `r {accuracy_knn_onPutler}`    | `r {accuracy_knn_onKmeans}`    |
+| Random Forest      | `r {accuracy_Forest_onPutler}` | `r {accuracy_Forest_onKmeans}` |
+
+
+
+# Conclusion
+## Customer Segments
+
+The traditional, fixed RFM analysis that I used defines eleven different customer segments. The Machine Learning generated customer segments turn out to have only seven customer segments. The analysis shows that the two sets of customer segments splits the customers in very different ways.
+
+The machine learning method created a reasonable sized set of segments that when interpreted seems to make good business sense. It is, however, impossible to say which set of the segment sets that are best because it of course depends on the intended use. If we want a set of segments that is good at describing the states a customer goes through during time, it might be possible to make an analysis of the development over time of customers. In this report I assumed that the customers were close to static over the year of the dataset. I belive that finding dynamic trends or customer lifecycles requires a dataset that covers a longer period of at least several years for a business like the one, I analysed in this report.
+
+## Predicting Customer Segment
+
+Using the K-nearest neigbor algorithm to predict the future customer segment from customers first order and their country did worse than random for the Kmeans segment! However, the Random Forest algorithm predicted the future customer segment from customers first order and their country a little better than random for both segment sets. Even though better than random, the accuracy is still low for both segment sets. Predicting using Random Forest might, though, be a beginning of helping the business to a finer segmentation of new customers.
+
+It is clearly easier to predict the Kmeans segments - this is quite naturally because of the fewer segments and the very high number of customers in a single segment.
+
+In this report I did not use the information of the content of the first order. It would be interesting to investigate if using this data, or perhaps even making a Market Basket Analysis, could help increase the accuracy of the predicting. Also I should refine the Random Forest analyses to be sure to find the really best value of `mtry`.

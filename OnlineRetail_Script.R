@@ -1,0 +1,288 @@
+###########################################################
+# Capstone Project 2: Online Retail 
+# Data Science Professional Certificate/HarvardX
+# author: "Paw Hermansen"
+# Jun 16, 2019
+###########################################################
+
+# Install the used packages if needed
+if(!require(tidyverse)) install.packages("tidyverse", dependencies = TRUE, repos = "http://cran.us.r-project.org")
+if(!require(openxlsx)) install.packages("openxlsx", dependencies = TRUE, repos = "http://cran.us.r-project.org")
+if(!require(caret)) install.packages("caret", dependencies = TRUE, repos = "http://cran.us.r-project.org")
+if(!require(scatterplot3d)) install.packages("scatterplot3d", dependencies = TRUE, repos = "http://cran.us.r-project.org")
+if(!require(lubridate)) install.packages("lubridate", dependencies = TRUE, repos = "http://cran.us.r-project.org")
+if(!require(tictoc)) install.packages("tictoc", dependencies = TRUE, repos = "http://cran.us.r-project.org")
+
+# Load the used packages
+library(tidyverse)
+library(openxlsx)
+library(caret)
+library(scatterplot3d)
+library(lubridate)
+library(tictoc)
+
+# Start the timing - toc() reports the timing in the output
+tic("Total script run time")
+
+################
+# Read and clean the data
+################
+tic("Read and clean the data")
+
+# Read the original data and convert the date to R format with London, UK, as the timezone.
+onlineRetail <- read.xlsx(xlsxFile = 'data/Online Retail.xlsx', colNames=TRUE, rowNames=FALSE)
+onlineRetail$InvoiceDate <- convertToDateTime(onlineRetail$InvoiceDate)
+attr(onlineRetail$InvoiceDate, "tzone") <- "Europe/London"
+
+# Remove all rows without CustomerID
+onlineRetail = onlineRetail[!is.na(onlineRetail$CustomerID), ]
+
+# Remove non product items as handling and postage
+onlineRetail = onlineRetail[grepl("^\\d{5}[A-Z]{0,2}$", onlineRetail$StockCode),, ]
+
+# Remove the the two cancelled orders with exceptionally large quantities
+onlineRetail = onlineRetail[abs(onlineRetail$Quantity) < 40000, ]
+
+# Change the appropriate fields from strings and numerics to be categorial data
+onlineRetail$InvoiceNo <- as.factor(onlineRetail$InvoiceNo)
+onlineRetail$StockCode <- as.factor(onlineRetail$StockCode)
+onlineRetail$Quantity <- as.integer(onlineRetail$Quantity)
+onlineRetail$CustomerID <- as.factor(onlineRetail$CustomerID)
+onlineRetail$Country <- as.factor(gsub(" ", "", onlineRetail$Country))
+
+# Save the cleaned data
+write.csv(onlineRetail, row.names = FALSE, 'data/onlineRetail_cleaned.csv')
+toc()
+
+################
+# Part 1: Analysis of Customer RFM and Customer Segments
+################
+tic("Customer RFM")
+
+# Build a new RFM dataset
+RecencyDate = as.Date(max(onlineRetail$InvoiceDate))
+CustomerRFM <- onlineRetail %>%
+  group_by(CustomerID) %>%
+  summarize(Recency = as.numeric(RecencyDate - as.Date(max(InvoiceDate))),
+            Frequency = n_distinct(InvoiceNo),
+            Monetary = sum(Quantity * UnitPrice))
+
+# Scale the values
+CustomerRFM$Recency <- scale(CustomerRFM$Recency)
+CustomerRFM$Frequency <- scale(CustomerRFM$Frequency)
+CustomerRFM$Monetary <- scale(CustomerRFM$Monetary)
+
+## Customer Segmentation using the Putler method
+# Find the scores
+n = nrow(CustomerRFM)
+CustomerRFM$RecencyScore   <- as.integer(1 + 5 * (1 - rank(CustomerRFM$Recency) / n))
+CustomerRFM$FrequencyScore <- as.integer(1 + 5 * rank(CustomerRFM$Frequency) / n)
+CustomerRFM$MonetaryScore  <- as.integer(1 + 5 * rank(CustomerRFM$Monetary) / n)
+
+# Function to map between the computed scores and the Putler segments
+putlerSegment <- function(row) {
+  fm <- as.integer((as.integer(row["FrequencyScore"]) + as.integer(row["MonetaryScore"])) / 2) - 1
+  idx = 1 + 5 * (as.integer(row["RecencyScore"]) - 1) + fm
+  switch(idx,
+         "Lost",
+         "Lost",
+         "AtRisk",
+         "AtRisk",
+         "CantLoseThem",
+         "Lost",
+         "Hibernating",
+         "AtRisk",
+         "AtRisk",
+         "AtRisk",
+         "AboutToSleep",
+         "AboutToSleep",
+         "NeedingAttention",
+         "LoyalCustomers",
+         "LoyalCustomers",
+         "Promising",
+         "PotentialLoyalist",
+         "PotentialLoyalist",
+         "LoyalCustomers",
+         "LoyalCustomers",
+         "RecentCustomers",
+         "PotentialLoyalist",
+         "PotentialLoyalist",
+         "LoyalCustomers",
+         "Champions")
+}
+
+# Compute the Putler segments and cleanup data
+CustomerRFM$putlerSegment <- apply(CustomerRFM, 1, putlerSegment)
+
+CustomerRFM$RecencyScore <- NULL
+CustomerRFM$FrequencyScore <- NULL
+CustomerRFM$MonetaryScore <- NULL
+CustomerRFM$putlerSegment <- as.factor(CustomerRFM$putlerSegment)
+
+## Customer Segmentation using K-means Machine Learning Clustering Method
+# The best k is found in the report by visually inspecting a curve
+bestKmeans_k <- 7
+
+# Find the best clusters on the RFM data
+set.seed(9)
+df <- select(CustomerRFM, Recency, Frequency, Monetary)
+k_result <- kmeans(df, centers = 7, iter.max = 15, nstart = 25)
+
+# Add the found clusters to the CustomerRFM
+CustomerRFM$kmeansSegment <- as.factor(k_result$cluster)
+
+# Save the RFM data
+write.csv(CustomerRFM, row.names = FALSE, 'data/customer_rfm.csv')
+toc()
+
+################
+# Part 2: Predicting Customer Segments from their First Order and demographics
+################
+tic("Predict customer segments: Prepare")
+
+# Find the first order for each customer
+firstOrder <- onlineRetail %>%
+  filter(!startsWith(tolower(as.character(InvoiceNo)), "c")) %>%
+  group_by(CustomerID, InvoiceNo) %>%
+  summarize(N = n(), TotalQuantity = sum(Quantity),
+            TimeOfDay = (60 * hour(min(InvoiceDate)) + minute(min(InvoiceDate))),
+            TotalPrice = sum(Quantity*UnitPrice), Country = first(Country),
+            InvoiceDate = min(InvoiceDate)) %>%
+  slice(which.min(InvoiceDate)) %>%
+  ungroup() %>%
+  inner_join(CustomerRFM, by = "CustomerID") %>%
+  select(-CustomerID, -Recency, -Frequency, -Monetary, -InvoiceDate, -InvoiceNo)
+
+# Encode the country column into a yes/no column for each country in the data
+dummy <- dummyVars("~ Country", data = firstOrder, sep = NULL)
+firstOrderEncoded <- cbind(firstOrder, predict(dummy, newdata = firstOrder))
+firstOrderEncoded <- firstOrderEncoded %>%
+  select(-Country) %>%
+  mutate_if(is.numeric, function(clm) { as.vector(scale(clm)) })
+
+# Save the first order data
+write.csv(firstOrderEncoded, row.names = FALSE, 'data/firstorder_encoded.csv')
+
+# Split data into testdata and traindata
+set.seed(9)
+test_index <- createDataPartition(firstOrderEncoded$kmeansSegment, times = 1, p = 0.3, list = FALSE)
+test_set <- firstOrderEncoded[test_index, ]
+train_set <- firstOrderEncoded[-test_index, ]
+toc()
+
+## Random Guessing for Putler Segments
+tic("Predict customer segments: Random Guessing Putler")
+
+# Train model
+putlerSegments <- CustomerRFM %>%
+  group_by(putlerSegment) %>%
+  summarize(NumberOfCustomers = n())
+
+# Test model
+set.seed(9)
+idx <- sample(nrow(putlerSegments), size = nrow(test_set), replace=TRUE, prob = putlerSegments$NumberOfCustomers)
+test_pred <- putlerSegments[idx, ]$putlerSegment
+accuracy <- mean(test_pred == test_set$putlerSegment)
+accuracy_random_onPutler = format(accuracy, digits=3)
+toc()
+
+## Random Guessing for Kmeans Segments
+tic("Predict customer segments: Random Guessing Kmeans")
+
+# Train model
+kmeansSegments <- CustomerRFM %>%
+  group_by(kmeansSegment) %>%
+  summarize(NumberOfCustomers = n())
+
+# Test model
+set.seed(9)
+idx <- sample(nrow(kmeansSegments), size = nrow(test_set), replace=TRUE, prob = kmeansSegments$NumberOfCustomers)
+test_pred <- kmeansSegments[idx, ]$kmeansSegment
+accuracy <- mean(test_pred == test_set$kmeansSegment)
+accuracy_random_onKmeans = format(accuracy, digits=3)
+toc()
+
+## Train and test K-nearest Neigbor Algorithm for Putler Segments
+tic("Predict customer segments: Knn Putler")
+
+# Train model
+set.seed(9)
+trained_knn_onPutler <- train(putlerSegment ~ .,
+                              method = "knn",
+                              data = select(train_set, -kmeansSegment),
+                              trControl = trainControl(method = "cv", number = 5, sampling = "up"),
+                              tuneGrid = data.frame(k = seq(2, 150, 2)))
+saveRDS(trained_knn_onPutler, "data/trained_knn_onPutler.rds")
+
+# Test model
+test_pred <- predict(trained_knn_onPutler, newdata = test_set)
+accuracy <- mean(test_pred == test_set$putlerSegment)
+accuracy_knn_onPutler = format(accuracy, digits=3)
+toc()
+
+## Train and Test K-nearest Neigbor Algorithm for Kmeans Segments
+tic("Predict customer segments: Knn Kmeans")
+
+# Train model
+set.seed(9)
+trained_knn_onKmeans <- train(kmeansSegment ~ .,
+                              method = "knn",
+                              data = select(train_set, -putlerSegment),
+                              trControl = trainControl(method = "cv", number = 5, sampling = "up"),
+                              tuneGrid = data.frame(k = seq(2, 150, 2)))
+saveRDS(trained_knn_onKmeans, "data/trained_knn_onKmeans.rds")
+
+# Test model
+test_pred <- predict(trained_knn_onKmeans, newdata = test_set)
+accuracy <- mean(test_pred == test_set$kmeansSegment)
+accuracy_knn_onKmeans = format(accuracy, digits=3)
+toc()
+
+## Train and Test Random Forest Algorithm for Putler Segments
+tic("Predict customer segments: Random Forest Putler")
+
+# Train model
+set.seed(9)
+trained_Forest_onPutler <- train(putlerSegment ~ .,
+                                 method = "rf",
+                                 data = select(train_set, -kmeansSegment),
+                                 trControl = trainControl(method = "cv", number = 5, sampling = "up"),
+                                 tuneGrid = data.frame(mtry = seq(1,15,1)))
+saveRDS(trained_Forest_onPutler, "data/trained_Forest_onPutler.rds")
+
+# Test model
+test_pred <- predict(trained_Forest_onPutler, newdata = test_set)
+accuracy <- mean(test_pred == test_set$putlerSegment)
+accuracy_Forest_onPutler = format(accuracy, digits=3)
+toc()
+
+## Train and test Random Forest Algorithm for Kmeans Segments
+tic("Predict customer segments: Random Forest Kmeans")
+
+# Train model
+set.seed(9)
+trained_Forest_onKmeans <- train(kmeansSegment ~ .,
+                                 method = "rf",
+                                 data = select(train_set, -putlerSegment),
+                                 trControl = trainControl(method = "cv", number = 5, sampling = "up"),
+                                 tuneGrid = data.frame(mtry = seq(1,15,1)))
+saveRDS(trained_Forest_onKmeans, "data/trained_Forest_onKmeans.rds")
+
+# Test model
+test_pred <- predict(trained_Forest_onKmeans, newdata = test_set)
+accuracy <- mean(test_pred == test_set$kmeansSegment)
+accuracy_Forest_onKmeans = format(accuracy, digits=3)
+toc()
+
+## Collect results of Predicting
+tic("Predict customer segments: Knn Putler")
+Method <- c("Random", "K-nearest neighbor", "Random Forest")
+Putlin_Segments_Accuracy <- c(accuracy_random_onPutler, accuracy_knn_onPutler, accuracy_Forest_onPutler)
+Kmeans_Segments_Accuracy <- c(accuracy_random_onKmeans, accuracy_knn_onKmeans, accuracy_Forest_onKmeans)
+
+# Save results of Predicting as a dataframe
+predictionResults <- data.frame(Method, Putlin_Segments_Accuracy, Kmeans_Segments_Accuracy)
+write.csv(predictionResults, row.names = FALSE, 'data/prediction_results.csv')
+toc()
+
+toc()
