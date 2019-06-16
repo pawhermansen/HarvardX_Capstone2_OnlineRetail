@@ -1,4 +1,0 @@
-"Method","Putlin_Segments_Accuracy","Kmeans_Segments_Accuracy"
-"Random","0.127","0.355"
-"K-nearest neighbor","0.137","0.306"
-"Random Forest","0.178","0.391"
